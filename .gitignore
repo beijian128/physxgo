@@ -1,0 +1,11 @@
+# Binary
+physx-demo
+
+# IDE
+.vscode/
+.idea/
+
+# Go
+*.exe
+*.test
+*.out
