@@ -1,5 +1,6 @@
 # Binary
 physx-demo
+bin/
 
 # IDE
 .vscode/
@@ -9,3 +10,6 @@ physx-demo
 *.exe
 *.test
 *.out
+
+# Local configuration (contains absolute paths specific to this machine)
+config.env
