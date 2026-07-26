@@ -80,6 +80,46 @@ func (s *SceneHandle) SetPVDFlags(constraints, contacts, sceneQueries bool) erro
 	return errOrNil(int(C.physx_scene_set_pvd_flags(s.h, C.int(c), C.int(ct), C.int(sq))))
 }
 
+// PVD visualization parameters (must match PxVisualizationParameter::Enum).
+const (
+	VisScale            = 0  // overall scale (master switch, must be >0)
+	VisWorldAxes        = 1  // world axes
+	VisBodyAxes         = 2  // body axes
+	VisBodyMassAxes     = 3  // body mass axes
+	VisBodyLinVelocity  = 4  // linear velocity
+	VisBodyAngVelocity  = 5  // angular velocity
+	// 6 = eDEPRECATED_BODY_JOINT_GROUPS
+	VisContactPoint     = 7  // contact points
+	VisContactNormal    = 8  // contact normals
+	VisContactError     = 9  // contact errors
+	VisContactForce     = 10 // contact forces
+	VisActorAxes        = 11 // actor axes
+	VisCollisionAABBs   = 12 // collision AABBs
+	VisCollisionShapes  = 13 // collision shapes
+	VisCollisionAxes    = 14 // collision axes
+	VisCollisionCompounds = 15 // compound AABBs
+	VisCollisionFNormals  = 16 // mesh face normals
+	VisCollisionEdges   = 17 // active edges
+	VisCollisionStatic  = 18 // static pruning
+	VisCollisionDynamic = 19 // dynamic pruning
+	// 20 = eDEPRECATED_COLLISION_PAIRS
+	VisJointLocalFrames = 21 // joint local axes
+	VisJointLimits      = 22 // joint limits
+)
+
+// SetVisualizationParameter sets a PVD visualization parameter.
+// Key params: VisJointLocalFrames and VisJointLimits control joint visualization size.
+// Typical value: 2.0-5.0 to make joints clearly visible.
+func (s *SceneHandle) SetVisualizationParameter(paramID int, value float32) error {
+	return errOrNil(int(C.physx_scene_set_vis_param(s.h, C.int(paramID), C.float(value))))
+}
+
+// EnableCCD enables/disables Continuous Collision Detection at the scene level.
+func (s *SceneHandle) EnableCCD(enabled bool, maxPasses int) error {
+	en := boolToInt(enabled)
+	return errOrNil(int(C.physx_scene_enable_ccd(s.h, C.int(en), C.int(maxPasses))))
+}
+
 func boolToInt(b bool) int {
 	if b {
 		return 1

@@ -81,6 +81,10 @@ struct PxSceneHandle_ {
     PxScene*               scene;
     PxDefaultCpuDispatcher* dispatcher;
 
+    /* filter shader */
+    PhysxFilterShaderCallback filterShaderCb;
+    void*                     filterShaderCbData;
+
     /* callbacks */
     PhysxContactCallback   contactCb;
     void*                  contactCbData;
@@ -90,6 +94,10 @@ struct PxSceneHandle_ {
     void*                  sleepCbData;
     PhysxAdvanceCallback   advanceCb;
     void*                  advanceCbData;
+
+    /* contact modify */
+    PhysxContactModifyCallback contactModifyCb;
+    void*                      contactModifyCbData;
 };
 
 struct PxMaterialHandle_ {
@@ -232,6 +240,64 @@ void physx_release_physics(PxPhysicsHandle p) {
  *  SECTION 2: SCENE
  *============================================================================*/
 
+/* ── Filter shader global state ──────────────────────────────────────────── */
+
+static PhysxFilterShaderCallback g_filterShaderCb     = NULL;
+static void*                     g_filterShaderCbData = NULL;
+
+static PxFilterFlags bridgeFilterShader(
+    PxFilterObjectAttributes attributes0, PxFilterData filterData0,
+    PxFilterObjectAttributes attributes1, PxFilterData filterData1,
+    PxPairFlags& pairFlags, const void* constantBlock, PxU32 constantBlockSize)
+{
+    if (g_filterShaderCb) {
+        CPxFilterData fd0 = { filterData0.word0, filterData0.word1,
+                              filterData0.word2, filterData0.word3 };
+        CPxFilterData fd1 = { filterData1.word0, filterData1.word1,
+                              filterData1.word2, filterData1.word3 };
+        uint32_t pf = (uint32_t)pairFlags;
+        uint32_t result = g_filterShaderCb(
+            (uint32_t)attributes0, &fd0,
+            (uint32_t)attributes1, &fd1,
+            &pf, g_filterShaderCbData);
+        pairFlags = (PxPairFlags)pf;
+        return (PxFilterFlags)result;
+    }
+    return PxDefaultSimulationFilterShader(
+        attributes0, filterData0, attributes1, filterData1,
+        pairFlags, constantBlock, constantBlockSize);
+}
+
+/* ── Contact modify global state ─────────────────────────────────────────── */
+
+static PxContactModifyPair* g_activeModifyPairs = NULL;
+
+/* ── Contact pair storage for extractContacts ────────────────────────────── */
+
+static const PxContactPair* g_activeContactPairs = NULL;
+static PxU32                g_activeContactPairCount = 0;
+
+class BridgeContactModifyCallback : public PxContactModifyCallback {
+public:
+    PxSceneHandle_* sceneHandle;
+    void onContactModify(PxContactModifyPair*const pairs, PxU32 count) override {
+        if (!sceneHandle || !sceneHandle->contactModifyCb || count == 0) return;
+        g_activeModifyPairs = pairs;
+        std::vector<CPxContactModifyPair> cps(count);
+        for (PxU32 i = 0; i < count; i++) {
+            cps[i].actors[0] = (uint64_t)(uintptr_t)pairs[i].actor[0];
+            cps[i].actors[1] = (uint64_t)(uintptr_t)pairs[i].actor[1];
+            cps[i].shapes[0] = (uint64_t)(uintptr_t)pairs[i].shape[0];
+            cps[i].shapes[1] = (uint64_t)(uintptr_t)pairs[i].shape[1];
+            cps[i].transforms[0] = toCPxTransform(pairs[i].transform[0]);
+            cps[i].transforms[1] = toCPxTransform(pairs[i].transform[1]);
+        }
+        sceneHandle->contactModifyCb(
+            sceneHandle->contactModifyCbData, cps.data(), (int)count);
+        g_activeModifyPairs = NULL;
+    }
+};
+
 /* Trampoline for simulation events */
 class SceneEventCallback : public PxSimulationEventCallback {
 public:
@@ -271,7 +337,12 @@ public:
     }
     void onContact(const PxContactPairHeader& pairHeader, const PxContactPair* pairs, PxU32 nbPairs) override {
         if (!sceneHandle || !sceneHandle->contactCb) return;
-        if (nbPairs == 0) return;
+
+        /* Store originals for extractContacts */
+        g_activeContactPairs     = pairs;
+        g_activeContactPairCount = nbPairs;
+
+        if (nbPairs == 0) { g_activeContactPairs = NULL; return; }
 
         CPxContactPairHeader hdr;
         hdr.actors[0] = (uint64_t)(uintptr_t)pairHeader.actors[0];
@@ -309,6 +380,9 @@ public:
         hdr.shapes[0] = 0; /* not easily available from pairHeader without traversal */
         hdr.shapes[1] = 0;
         sceneHandle->contactCb(sceneHandle->contactCbData, &hdr, cps.data(), (int)nbPairs);
+
+        g_activeContactPairs     = NULL;
+        g_activeContactPairCount = 0;
     }
     void onTrigger(PxTriggerPair* pairs, PxU32 count) override {
         if (!sceneHandle || !sceneHandle->triggerCb) return;
@@ -337,6 +411,8 @@ PxSceneHandle physx_create_scene(PxPhysicsHandle physics, int num_threads,
     PxSceneHandle_* h = new PxSceneHandle_();
     h->scene       = NULL;
     h->dispatcher  = NULL;
+    h->filterShaderCb   = NULL;
+    h->filterShaderCbData = NULL;
     h->contactCb   = NULL;
     h->contactCbData = NULL;
     h->triggerCb   = NULL;
@@ -345,6 +421,8 @@ PxSceneHandle physx_create_scene(PxPhysicsHandle physics, int num_threads,
     h->sleepCbData = NULL;
     h->advanceCb   = NULL;
     h->advanceCbData = NULL;
+    h->contactModifyCb   = NULL;
+    h->contactModifyCbData = NULL;
 
     PxSceneDesc sceneDesc(physics->physics->getTolerancesScale());
     sceneDesc.gravity = PxVec3(gravity_x, gravity_y, gravity_z);
@@ -356,7 +434,7 @@ PxSceneHandle physx_create_scene(PxPhysicsHandle physics, int num_threads,
         return NULL;
     }
     sceneDesc.cpuDispatcher = h->dispatcher;
-    sceneDesc.filterShader  = PxDefaultSimulationFilterShader;
+    sceneDesc.filterShader  = bridgeFilterShader;   /* use trampoline, falls back to default */
 
     h->scene = physics->physics->createScene(sceneDesc);
     if (!h->scene) {
@@ -376,10 +454,18 @@ PxSceneHandle physx_create_scene(PxPhysicsHandle physics, int num_threads,
 
 void physx_release_scene(PxSceneHandle scene) {
     if (!scene) return;
-    /* Remove and delete the callback */
-    PxSimulationEventCallback* cb = const_cast<PxSimulationEventCallback*>(scene->scene->getSimulationEventCallback());
+    /* Remove and delete the simulation event callback */
+    PxSimulationEventCallback* cb = const_cast<PxSimulationEventCallback*>(
+        scene->scene->getSimulationEventCallback());
     scene->scene->setSimulationEventCallback(NULL);
     delete cb;
+    /* Remove and delete the contact modify callback */
+    BridgeContactModifyCallback* cmcb = static_cast<BridgeContactModifyCallback*>(
+        const_cast<PxContactModifyCallback*>(scene->scene->getContactModifyCallback()));
+    if (cmcb) {
+        scene->scene->setContactModifyCallback(NULL);
+        delete cmcb;
+    }
     if (scene->scene)      scene->scene->release();
     if (scene->dispatcher)  scene->dispatcher->release();
     delete scene;
@@ -436,6 +522,40 @@ int physx_scene_set_pvd_flags(PxSceneHandle scene, int constraints, int contacts
         client->setScenePvdFlag(PxPvdSceneFlag::eTRANSMIT_CONSTRAINTS, constraints != 0);
         client->setScenePvdFlag(PxPvdSceneFlag::eTRANSMIT_CONTACTS, contacts != 0);
         client->setScenePvdFlag(PxPvdSceneFlag::eTRANSMIT_SCENEQUERIES, queries != 0);
+    }
+    return PHYSX_SUCCESS;
+}
+
+int physx_scene_set_vis_param(PxSceneHandle scene, int param_id, float value) {
+    if (!scene || !scene->scene) return PHYSX_ERROR_NULL_PTR;
+    scene->scene->setVisualizationParameter((PxVisualizationParameter::Enum)param_id, value);
+    return PHYSX_SUCCESS;
+}
+
+int physx_scene_set_filter_shader(PxSceneHandle scene,
+                                   PhysxFilterShaderCallback cb, void* userdata) {
+    /* Filter shader is global (not per-scene) because PhysX uses raw function ptr,
+       not std::function. If you need per-scene filter shaders, dispatch in Go. */
+    g_filterShaderCb     = cb;
+    g_filterShaderCbData = userdata;
+    /* Also store on the scene for bookkeeping */
+    if (scene) {
+        scene->filterShaderCb     = cb;
+        scene->filterShaderCbData = userdata;
+    }
+    return PHYSX_SUCCESS;
+}
+
+int physx_scene_enable_ccd(PxSceneHandle scene, int enabled, int max_passes) {
+    if (!scene || !scene->scene) return PHYSX_ERROR_NULL_PTR;
+    if (enabled) {
+        scene->scene->setFlag(PxSceneFlag::eENABLE_CCD, true);
+        if (max_passes > 0) {
+            /* PxScene doesn't have a public ccdMaxPasses setter after creation,
+               but the default is 1 which is usually enough. */
+        }
+    } else {
+        scene->scene->setFlag(PxSceneFlag::eENABLE_CCD, false);
     }
     return PHYSX_SUCCESS;
 }
@@ -771,6 +891,12 @@ int physx_actor_get_nb_shapes(PxActorHandle actor) {
 int physx_actor_get_type(PxActorHandle actor) {
     if (!actor) return -1;
     return actor->actorType;
+}
+
+int physx_actor_update_mass_and_inertia(PxActorHandle actor, float density) {
+    PxRigidBody* b = toBody(actor); if (!b) return PHYSX_ERROR_INVALID_ARG;
+    PxRigidBodyExt::updateMassAndInertia(*b, density);
+    return PHYSX_SUCCESS;
 }
 
 /*============================================================================
@@ -1299,6 +1425,93 @@ int physx_scene_set_advance_callback(PxSceneHandle scene, PhysxAdvanceCallback c
     return PHYSX_SUCCESS;
 }
 
+int physx_scene_set_contact_modify_callback(PxSceneHandle scene,
+    PhysxContactModifyCallback cb, void* userdata) {
+    if (!scene || !scene->scene) return PHYSX_ERROR_NULL_PTR;
+    scene->contactModifyCb     = cb;
+    scene->contactModifyCbData = userdata;
+
+    /* Create or replace the PxContactModifyCallback instance */
+    BridgeContactModifyCallback* existing =
+        static_cast<BridgeContactModifyCallback*>(
+            const_cast<PxContactModifyCallback*>(
+                scene->scene->getContactModifyCallback()));
+    if (cb) {
+        if (!existing) {
+            BridgeContactModifyCallback* cmcb = new BridgeContactModifyCallback();
+            cmcb->sceneHandle = scene;
+            scene->scene->setContactModifyCallback(cmcb);
+        }
+    } else {
+        if (existing) {
+            scene->scene->setContactModifyCallback(NULL);
+            delete existing;
+        }
+    }
+    return PHYSX_SUCCESS;
+}
+
+int physx_contact_modify_set_inv_mass_scale(int pairIndex, int actorIndex, float scale) {
+    if (!g_activeModifyPairs || pairIndex < 0 || actorIndex < 0 || actorIndex > 1)
+        return PHYSX_ERROR_INVALID_ARG;
+    PxContactSet& cs = g_activeModifyPairs[pairIndex].contacts;
+    if (actorIndex == 0)
+        cs.setInvMassScale0(scale);
+    else
+        cs.setInvMassScale1(scale);
+    return PHYSX_SUCCESS;
+}
+
+int physx_contact_modify_set_inv_inertia_scale(int pairIndex, int actorIndex, float scale) {
+    if (!g_activeModifyPairs || pairIndex < 0 || actorIndex < 0 || actorIndex > 1)
+        return PHYSX_ERROR_INVALID_ARG;
+    PxContactSet& cs = g_activeModifyPairs[pairIndex].contacts;
+    if (actorIndex == 0)
+        cs.setInvInertiaScale0(scale);
+    else
+        cs.setInvInertiaScale1(scale);
+    return PHYSX_SUCCESS;
+}
+
+int physx_contact_pair_extract_contacts(const CPxContactPair* cpair,
+    CPxContactPairPoint* buffer, int bufferSize) {
+    if (!cpair || !buffer || bufferSize <= 0) return PHYSX_ERROR_INVALID_ARG;
+    if (!g_activeContactPairs || g_activeContactPairCount == 0) return 0;
+
+    /* Find the index of cpair in the stored array by comparing shape pointers.
+       The shapes[0] in CPxContactPair was stored as the original PxShape* pointer. */
+    int pairIndex = -1;
+    for (PxU32 i = 0; i < g_activeContactPairCount; i++) {
+        if ((uint64_t)(uintptr_t)g_activeContactPairs[i].shapes[0] == cpair->shapes[0] &&
+            (uint64_t)(uintptr_t)g_activeContactPairs[i].shapes[1] == cpair->shapes[1]) {
+            pairIndex = (int)i;
+            break;
+        }
+    }
+    if (pairIndex < 0) return 0;
+
+    const PxContactPair& orig = g_activeContactPairs[pairIndex];
+    PxU32 maxContacts = (PxU32)bufferSize;
+    if (maxContacts > 64) maxContacts = 64;
+    PxContactPairPoint pts[64];
+    PxU32 nb = orig.extractContacts(pts, maxContacts);
+    for (PxU32 i = 0; i < nb; i++) {
+        buffer[i].position           = toCPxVec3(pts[i].position);
+        buffer[i].normal             = toCPxVec3(pts[i].normal);
+        buffer[i].impulse            = toCPxVec3(pts[i].impulse);
+        buffer[i].separation         = pts[i].separation;
+        buffer[i].internalFaceIndex0 = pts[i].internalFaceIndex0;
+        buffer[i].internalFaceIndex1 = pts[i].internalFaceIndex1;
+    }
+    return (int)nb;
+}
+
+int physx_actor_compute_linear_angular_impulse(PxActorHandle actor,
+    float* lin_x, float* lin_y, float* lin_z,
+    float* ang_x, float* ang_y, float* ang_z) {
+    return PHYSX_ERROR_GENERIC; /* stub — full version needs world-space point+impulse args */
+}
+
 /*============================================================================
  *  SECTION 9: CHARACTER CONTROLLER
  *============================================================================*/
@@ -1597,6 +1810,67 @@ void physx_release_vehicle(PxVehicleHandle vehicle) {}
 int physx_close_vehicle_sdk(void) {
     return PHYSX_SUCCESS;
 }
+
+/*============================================================================
+ *  SECTION 12.5: C TRAMPOLINES — forward from C callbacks to Go //export
+ *============================================================================*/
+
+/* Declared extern in callbacks.go preamble; implemented here once. */
+extern "C" {
+
+uint32_t goFilterShaderCB(uintptr_t userdata,
+    uint32_t attr0, CPxFilterData* fd0,
+    uint32_t attr1, CPxFilterData* fd1,
+    uint32_t* pairFlags);
+
+void goContactCB(uintptr_t userdata,
+    const CPxContactPairHeader* header,
+    const CPxContactPair* pairs, int nbPairs);
+
+void goTriggerCB(uintptr_t userdata,
+    const CPxTriggerPair* pairs, int nbPairs);
+
+void goSleepCB(uintptr_t userdata,
+    PxActorHandle* actors, int nbActors, int isWaking);
+
+void goContactModifyCB(uintptr_t userdata,
+    const CPxContactModifyPair* pairs, int nbPairs);
+
+uint32_t cFilterShaderTramp(
+    uint32_t attr0, const CPxFilterData* fd0,
+    uint32_t attr1, const CPxFilterData* fd1,
+    uint32_t* pairFlags, void* userdata)
+{
+    return goFilterShaderCB((uintptr_t)userdata, attr0, (CPxFilterData*)fd0,
+        attr1, (CPxFilterData*)fd1, pairFlags);
+}
+
+void cContactTramp(void* userdata,
+    const CPxContactPairHeader* header,
+    const CPxContactPair* pairs, int nbPairs)
+{
+    goContactCB((uintptr_t)userdata, header, pairs, nbPairs);
+}
+
+void cTriggerTramp(void* userdata,
+    const CPxTriggerPair* pairs, int nbPairs)
+{
+    goTriggerCB((uintptr_t)userdata, pairs, nbPairs);
+}
+
+void cSleepTramp(void* userdata,
+    PxActorHandle* actors, int nbActors, int isWaking)
+{
+    goSleepCB((uintptr_t)userdata, actors, nbActors, isWaking);
+}
+
+void cContactModifyTramp(void* userdata,
+    const CPxContactModifyPair* pairs, int nbPairs)
+{
+    goContactModifyCB((uintptr_t)userdata, pairs, nbPairs);
+}
+
+} /* extern "C" */
 
 /*============================================================================
  *  SECTION 12: UTILITY

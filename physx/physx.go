@@ -2,9 +2,7 @@
 package physx
 
 /*
-#cgo CXXFLAGS: -std=c++11 -DNDEBUG
-#cgo LDFLAGS: -lPhysX3Extensions -lPhysX3_x64 -lPhysX3Common_x64 -lPhysX3CharacterKinematic_x64 -lPhysX3Cooking_x64
-#cgo LDFLAGS: -lPxFoundation_x64 -lPxPvdSDK_x64
+#cgo CXXFLAGS: -std=c++11
 #cgo LDFLAGS: -lstdc++ -lm -lpthread -ldl
 
 #include <stdlib.h>

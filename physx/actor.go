@@ -108,6 +108,15 @@ func (a *ActorHandle) Release() {
 	a.h = nil
 }
 
+// SetInvalid clears the internal handle without releasing C++ memory.
+// Use when the C++ object is already freed (e.g. by scene release).
+func (a *ActorHandle) SetInvalid() {
+	if a == nil {
+		return
+	}
+	a.h = nil
+}
+
 // ── Pose ─────────────────────────────────────────────────────────────────────
 
 // GetGlobalPose returns the actor's world-space pose as (px,py,pz, qx,qy,qz,qw).
@@ -214,6 +223,11 @@ func (a *ActorHandle) SetMass(mass float32) error {
 // GetMass returns the actor's mass.
 func (a *ActorHandle) GetMass() float32 {
 	return float32(C.physx_actor_get_mass(a.h))
+}
+
+// UpdateMassAndInertia computes mass & inertia from geometry and uniform density.
+func (a *ActorHandle) UpdateMassAndInertia(density float32) error {
+	return errOrNil(int(C.physx_actor_update_mass_and_inertia(a.h, C.float(density))))
 }
 
 // ── Sleep ────────────────────────────────────────────────────────────────────

@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PhysX 3.4 — Web Viewer (SSE)</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;overflow:hidden;font-family:monospace}
+canvas{display:block}
+#ui{position:fixed;top:12px;left:12px;z-index:10;display:flex;flex-direction:column;gap:8px}
+#ui button{background:rgba(30,40,50,0.85);color:#ccc;border:1px solid #556;padding:8px 16px;cursor:pointer;font-family:monospace;font-size:13px;border-radius:4px;text-align:left;transition:background .15s}
+#ui button:hover{background:rgba(60,80,100,0.9);color:#fff}
+#ui button.active{background:#2a6;color:#fff;border-color:#4d8}
+#info{position:fixed;top:12px;right:12px;z-index:10;color:#aaa;font-size:12px;text-align:right;line-height:1.5;background:rgba(10,15,20,0.7);padding:8px 14px;border-radius:4px}
+#fire-btn{position:fixed;bottom:30px;left:50%;transform:translateX(-50%);z-index:10;background:rgba(200,60,40,0.85);color:#fff;border:none;padding:12px 32px;font-size:16px;font-family:monospace;border-radius:6px;cursor:pointer;letter-spacing:2px}
+#fire-btn:hover{background:rgba(240,80,50,0.95)}
+#status{position:fixed;bottom:8px;right:8px;z-index:10;color:#0f0;font-size:10px;background:rgba(0,0,0,0.7);padding:2px 6px;border-radius:3px}
+</style>
+</head>
+<body>
+<div id="ui">
+  <button id="btn-hello" class="active" onclick="switchScene('hello')">📦 HelloWorld</button>
+  <button id="btn-joints" onclick="switchScene('joints')">🔗 JointChains</button>
+  <button id="btn-contact" onclick="switchScene('contact')">💥 ContactReport</button>
+  <button onclick="fireProjectile()" style="margin-top:6px;border-color:#c54;">🎯 Fire Sphere</button>
+  <button onclick="addStack()">➕ Add Stack</button>
+</div>
+<div id="info">
+  <div id="fps">FPS: --</div>
+  <div id="actor-count">Actors: --</div>
+  <div id="time">Time: 0.0s</div>
+</div>
+<button id="fire-btn" onclick="fireProjectile()">🎯 FIRE</button>
+<div id="status">⚫ connecting...</div>
+
+<script type="importmap">
+{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ── Scene ────────────────────────────────────────────────────────────────────
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0.30, 0.40, 0.50);
+scene.fog = new THREE.Fog(0x4d6680, 80, 300);
+
+const camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 1, 1000);
+camera.position.set(30, 25, 40);
+camera.lookAt(0, 5, -10);
+
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 6, -10);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.minDistance = 5;
+controls.maxDistance = 300;
+controls.update();
+
+scene.add(new THREE.AmbientLight(0x1a334d, 0.6));
+const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
+dirLight.position.set(100, 100, 400);
+dirLight.castShadow = true;
+dirLight.shadow.mapSize.width = 1024;
+dirLight.shadow.mapSize.height = 1024;
+dirLight.shadow.camera.near = 1;
+dirLight.shadow.camera.far = 1200;
+dirLight.shadow.camera.left = -80;
+dirLight.shadow.camera.right = 80;
+dirLight.shadow.camera.top = 80;
+dirLight.shadow.camera.bottom = -80;
+scene.add(dirLight);
+
+const gGeo = new THREE.PlaneGeometry(200, 200);
+const gMat = new THREE.MeshStandardMaterial({color:0x3a4a5a, roughness:0.9, metalness:0.1});
+const ground = new THREE.Mesh(gGeo, gMat);
+ground.rotation.x = -Math.PI/2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+const grid = new THREE.GridHelper(120, 40, 0x556677, 0x334455);
+grid.position.y = 0.01;
+scene.add(grid);
+
+// ── Actor meshes ─────────────────────────────────────────────────────────────
+const actorMeshes = new Map();
+const awakeMat = new THREE.MeshPhongMaterial({color:0x00bf00, specular:0x111111, shininess:30});
+const sleepMat = new THREE.MeshPhongMaterial({color:0x003000, specular:0x050505, shininess:5});
+const contactSpheres = [];
+
+function createGeo(type, hx, hy, hz) {
+  if (!isFinite(hx) || hx <= 0.001) hx = 0.5;
+  if (!isFinite(hy) || hy <= 0.001) hy = 0.5;
+  if (!isFinite(hz) || hz <= 0.001) hz = 0.5;
+  switch (type) {
+    case 'box':    return new THREE.BoxGeometry(hx*2, hy*2, hz*2);
+    case 'sphere': return new THREE.SphereGeometry(hx, 24, 24);
+    case 'capsule':return new THREE.CapsuleGeometry(hx, hy*2, 8, 16);
+    default:       return new THREE.BoxGeometry(0.5, 0.5, 0.5);
+  }
+}
+
+// ── Latest state (updated by SSE, rendered at 60fps) ─────────────────────────
+let latestState = null;
+
+function applyState(state) {
+  const actors = state.actors || [];
+  document.getElementById('actor-count').textContent = 'Actors: ' + actors.length;
+  document.getElementById('time').textContent = 'Time: ' + (state.timestamp||0).toFixed(1) + 's';
+
+  const seen = new Set();
+  for (const a of actors) {
+    seen.add(a.id);
+    let entry = actorMeshes.get(a.id);
+    if (!entry || entry.type !== a.type ||
+        Math.abs(entry.hx - a.hx) > 0.01 ||
+        Math.abs(entry.hy - a.hy) > 0.01 ||
+        Math.abs(entry.hz - a.hz) > 0.01) {
+      if (entry) { scene.remove(entry.mesh); entry.mesh.geometry.dispose(); entry.mesh.material.dispose(); }
+      const geo = createGeo(a.type, a.hx, a.hy, a.hz);
+      const mat = (a.isSleeping ? sleepMat : awakeMat).clone();
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      scene.add(mesh);
+      entry = {mesh, type:a.type, hx:a.hx, hy:a.hy, hz:a.hz};
+      actorMeshes.set(a.id, entry);
+    }
+    entry.mesh.position.set(a.position.x, a.position.y, a.position.z);
+    entry.mesh.quaternion.set(a.rotation.x, a.rotation.y, a.rotation.z, a.rotation.w);
+    const c = a.isSleeping ? 0x003000 : 0x00bf00;
+    if (entry.mesh.material.color.getHex() !== c) entry.mesh.material.color.setHex(c);
+  }
+  for (const [id, e] of actorMeshes) {
+    if (!seen.has(id)) { scene.remove(e.mesh); e.mesh.geometry.dispose(); e.mesh.material.dispose(); actorMeshes.delete(id); }
+  }
+
+  // Contact dots
+  for (const c of contactSpheres) { scene.remove(c); c.geometry.dispose(); c.material.dispose(); }
+  contactSpheres.length = 0;
+  const dotGeo = new THREE.SphereGeometry(0.3, 8, 8);
+  const dotMat = new THREE.MeshBasicMaterial({color:0xff4444});
+  for (const c of state.contacts || []) {
+    const dot = new THREE.Mesh(dotGeo, dotMat);
+    dot.position.set(c.position.x, c.position.y, c.position.z);
+    scene.add(dot);
+    contactSpheres.push(dot);
+  }
+}
+
+// ── SSE: server pushes state, we store it and render at 60fps ─────────────────
+const evtSource = new EventSource('/api/stream');
+evtSource.onopen = () => document.getElementById('status').textContent = '🟢 live';
+evtSource.onerror = () => document.getElementById('status').textContent = '🔴 disconnected';
+evtSource.onmessage = (e) => {
+  try { latestState = JSON.parse(e.data); }
+  catch(ex) {}
+};
+
+// ── 60fps render loop (only reads latestState, no network) ───────────────────
+let fpsFrames = 0, fpsTime = performance.now();
+function render(ts) {
+  requestAnimationFrame(render);
+  if (latestState) applyState(latestState);
+  fpsFrames++;
+  if (ts - fpsTime > 1000) {
+    document.getElementById('fps').textContent = 'FPS: ' + Math.round(fpsFrames*1000/(ts-fpsTime));
+    fpsFrames = 0; fpsTime = ts;
+  }
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+// ── Actions ──────────────────────────────────────────────────────────────────
+window.switchScene = async function(name) {
+  document.querySelectorAll('#ui button').forEach(b => b.classList.remove('active'));
+  document.getElementById('btn-' + name)?.classList.add('active');
+  await fetch('/api/scene', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({scene:name})});
+  for (const [id,e] of actorMeshes) { scene.remove(e.mesh); e.mesh.geometry.dispose(); e.mesh.material.dispose(); }
+  actorMeshes.clear();
+  for (const c of contactSpheres) { scene.remove(c); c.geometry.dispose(); c.material.dispose(); }
+  contactSpheres.length = 0;
+  latestState = null;
+};
+window.fireProjectile = async function() {
+  const dir = new THREE.Vector3(); camera.getWorldDirection(dir);
+  await fetch('/api/fire', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({px:camera.position.x, py:camera.position.y, pz:camera.position.z, dx:dir.x, dy:dir.y, dz:dir.z})});
+};
+window.addStack = async () => { await fetch('/api/addstack', {method:'POST'}); };
+window.addEventListener('resize', () => { camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+
+requestAnimationFrame(render);
+</script>
+</body>
+</html>

@@ -13,17 +13,17 @@ import "runtime"
 // JointHandle wraps a PxJoint.
 type JointHandle struct{ h C.PxJointHandle }
 
-// Joint constraint flags.
+// Joint constraint flags. Must match PxConstraintFlag::Enum from PxConstraint.h.
+// ⚠️ Bit positions verified against PhysX 3.4 source — ePROJECTION is a combo (1<<1|1<<2), not a unique bit.
 const (
-	JointFlagBroken               = 1 << 0
-	JointFlagProjectToActor0      = 1 << 1
-	JointFlagProjectToActor1      = 1 << 2
-	JointFlagProjection           = 1 << 3
-	JointFlagCollisionEnabled     = 1 << 4
-	JointFlagVisualization        = 1 << 5
-	JointFlagDriveLimitsAreForces = 1 << 6
-	JointFlagImprovedSLERP        = 1 << 7
-	JointFlagDisablePreprocessing = 1 << 8
+	JointFlagBroken               = 1 << 0 // eBROKEN
+	JointFlagProjectToActor0      = 1 << 1 // ePROJECT_TO_ACTOR0
+	JointFlagProjectToActor1      = 1 << 2 // ePROJECT_TO_ACTOR1
+	JointFlagCollisionEnabled     = 1 << 3 // eCOLLISION_ENABLED
+	JointFlagVisualization        = 1 << 4 // eVISUALIZATION   ← NOT 1<<5!
+	JointFlagDriveLimitsAreForces = 1 << 5 // eDRIVE_LIMITS_ARE_FORCES
+	JointFlagImprovedSLERP        = 1 << 7 // eIMPROVED_SLERP
+	JointFlagDisablePreprocessing = 1 << 8 // eDISABLE_PREPROCESSING
 )
 
 // ── Creation helpers ────────────────────────────────────────────────────────
@@ -93,6 +93,14 @@ func (j *JointHandle) Release() {
 		return
 	}
 	C.physx_release_joint(j.h)
+	j.h = nil
+}
+
+// SetInvalid clears the internal handle without releasing C++ memory.
+func (j *JointHandle) SetInvalid() {
+	if j == nil {
+		return
+	}
 	j.h = nil
 }
 

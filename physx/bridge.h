@@ -133,6 +133,16 @@ typedef struct {
     uint32_t contactCount;
 } CPxContactPair;
 
+/* Per-contact-point data (for extractContacts) */
+typedef struct {
+    CPxVec3  position;
+    CPxVec3  normal;
+    CPxVec3  impulse;
+    float    separation;
+    uint32_t internalFaceIndex0;
+    uint32_t internalFaceIndex1;
+} CPxContactPairPoint;
+
 /*============================================================================
  *  JOINT TYPES
  *============================================================================*/
@@ -185,6 +195,67 @@ typedef enum {
     CPxForceMode_VELOCITY_CHANGE,
     CPxForceMode_ACCELERATION
 } CPxForceMode;
+
+/*============================================================================
+ *  FILTER SHADER FLAGS (PxPairFlag / PxFilterFlag)
+ *============================================================================*/
+
+/* Pair flags — OR'd into *pairFlags by filter shader.
+   MUST match PxPairFlag::Enum in PxFiltering.h exactly! */
+typedef enum {
+    CPxPairFlag_SOLVE_CONTACT                 = 1 << 0,   /* eSOLVE_CONTACT */
+    CPxPairFlag_MODIFY_CONTACTS               = 1 << 1,   /* eMODIFY_CONTACTS */
+    CPxPairFlag_NOTIFY_TOUCH_FOUND            = 1 << 2,   /* eNOTIFY_TOUCH_FOUND */
+    CPxPairFlag_NOTIFY_TOUCH_PERSISTS         = 1 << 3,   /* eNOTIFY_TOUCH_PERSISTS */
+    CPxPairFlag_NOTIFY_TOUCH_LOST             = 1 << 4,   /* eNOTIFY_TOUCH_LOST */
+    CPxPairFlag_NOTIFY_TOUCH_CCD              = 1 << 5,   /* eNOTIFY_TOUCH_CCD */
+    CPxPairFlag_NOTIFY_THRESHOLD_FORCE_FOUND  = 1 << 6,   /* eNOTIFY_THRESHOLD_FORCE_FOUND */
+    CPxPairFlag_NOTIFY_THRESHOLD_FORCE_PERSISTS = 1 << 7, /* eNOTIFY_THRESHOLD_FORCE_PERSISTS */
+    CPxPairFlag_NOTIFY_THRESHOLD_FORCE_LOST   = 1 << 8,   /* eNOTIFY_THRESHOLD_FORCE_LOST */
+    CPxPairFlag_NOTIFY_CONTACT_POINTS         = 1 << 9,   /* eNOTIFY_CONTACT_POINTS */
+    CPxPairFlag_DETECT_DISCRETE_CONTACT       = 1 << 10,  /* eDETECT_DISCRETE_CONTACT */
+    CPxPairFlag_DETECT_CCD_CONTACT            = 1 << 11,  /* eDETECT_CCD_CONTACT */
+    CPxPairFlag_PRE_SOLVER_VELOCITY           = 1 << 12,  /* ePRE_SOLVER_VELOCITY */
+    CPxPairFlag_POST_SOLVER_VELOCITY          = 1 << 13,  /* ePOST_SOLVER_VELOCITY */
+    CPxPairFlag_CONTACT_EVENT_POSE            = 1 << 14   /* eCONTACT_EVENT_POSE */
+} CPxPairFlag;
+
+/* Filter flags — returned by filter shader */
+typedef enum {
+    CPxFilterFlag_DEFAULT   = 0,
+    CPxFilterFlag_KILL      = 1 << 0,  /* eKILL */
+    CPxFilterFlag_SUPPRESS  = 1 << 1,  /* eSUPPRESS */
+    CPxFilterFlag_CALLBACK  = 1 << 2,  /* eCALLBACK */
+    CPxFilterFlag_NOTIFY    = 1 << 3   /* eNOTIFY */
+} CPxFilterFlag;
+
+/* Filter shader callback:
+   - receives attributes and filter data for both shapes
+   - writes desired pair flags into *pairFlags
+   - returns filter flags (CPxFilterFlag bits)
+*/
+typedef uint32_t (*PhysxFilterShaderCallback)(
+    uint32_t             attributes0,
+    const CPxFilterData* filterData0,
+    uint32_t             attributes1,
+    const CPxFilterData* filterData1,
+    uint32_t*            pairFlags,
+    void*                userdata);
+
+/*============================================================================
+ *  CONTACT MODIFY TYPES
+ *============================================================================*/
+typedef struct {
+    uint64_t     actors[2];     /* opaque actor handles */
+    uint64_t     shapes[2];     /* opaque shape handles */
+    CPxTransform transforms[2]; /* global poses of both actors */
+} CPxContactModifyPair;
+
+/* Called during PxContactModifyCallback::onContactModify.
+   Call physx_contact_modify_set_inv_mass_scale / set_inv_inertia_scale
+   to adjust the contact response of each pair. */
+typedef void (*PhysxContactModifyCallback)(void* userdata,
+    const CPxContactModifyPair* pairs, int nbPairs);
 
 /*============================================================================
  *  ACTOR FLAGS
@@ -321,6 +392,17 @@ int physx_scene_remove_actor(PxSceneHandle scene, PxActorHandle actor);
 int physx_scene_set_pvd_flags(PxSceneHandle scene, int transmit_constraints,
                                int transmit_contacts, int transmit_scenequeries);
 
+/** PVD visualization parameters */
+int physx_scene_set_vis_param(PxSceneHandle scene, int param_id, float value);
+
+/** Register a custom filter shader callback (replaces default). Pass NULL/0 to restore default. */
+int physx_scene_set_filter_shader(PxSceneHandle scene,
+                                   PhysxFilterShaderCallback cb, void* userdata);
+
+/** Enable/disable CCD at the scene level and set max passes.
+    Must be called BEFORE creating CCD-enabled actors. */
+int physx_scene_enable_ccd(PxSceneHandle scene, int enabled, int max_passes);
+
 /*============================================================================
  *  SECTION 3: MATERIALS
  *============================================================================*/
@@ -434,6 +516,9 @@ int physx_actor_get_nb_shapes(PxActorHandle actor);
 
 /** Get underlying actor type: 0=RIGID_STATIC, 1=RIGID_DYNAMIC */
 int physx_actor_get_type(PxActorHandle actor);
+
+/** Compute mass & inertia from geometry + density (PxRigidBodyExt::updateMassAndInertia) */
+int physx_actor_update_mass_and_inertia(PxActorHandle actor, float density);
 
 /*============================================================================
  *  SECTION 5: SHAPES
@@ -622,6 +707,26 @@ int physx_scene_set_contact_callback(PxSceneHandle scene, PhysxContactCallback c
 int physx_scene_set_trigger_callback(PxSceneHandle scene, PhysxTriggerCallback cb, void* userdata);
 int physx_scene_set_sleep_callback(PxSceneHandle scene, PhysxSleepCallback cb, void* userdata);
 int physx_scene_set_advance_callback(PxSceneHandle scene, PhysxAdvanceCallback cb, void* userdata);
+
+/** Register a contact-modify callback (PxContactModifyCallback). Pass NULL to unregister. */
+int physx_scene_set_contact_modify_callback(PxSceneHandle scene,
+    PhysxContactModifyCallback cb, void* userdata);
+
+/* Contact modify helpers — call these from within the contact modify callback only.
+   pairIndex: index into the pairs[] array passed to the callback
+   actorIndex: 0 or 1 (the two bodies in the contact pair)
+   scale: new inv-mass-scale or inv-inertia-scale value */
+int physx_contact_modify_set_inv_mass_scale(int pairIndex, int actorIndex, float scale);
+int physx_contact_modify_set_inv_inertia_scale(int pairIndex, int actorIndex, float scale);
+
+/** Extract all contact points from a CPxContactPair. Returns number of points extracted. */
+int physx_contact_pair_extract_contacts(const CPxContactPair* pair,
+    CPxContactPairPoint* buffer, int bufferSize);
+
+/** Compute linear+angular impulse from contacts (PxRigidBodyExt). */
+int physx_actor_compute_linear_angular_impulse(PxActorHandle actor,
+    float* lin_x, float* lin_y, float* lin_z,
+    float* ang_x, float* ang_y, float* ang_z);
 
 /*============================================================================
  *  SECTION 9: CHARACTER CONTROLLER

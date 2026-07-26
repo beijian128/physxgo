@@ -7,70 +7,133 @@ Go 语言对 NVIDIA PhysX 3.4 物理引擎的全面 cgo 绑定，支持在 Linux
 ```
 physx-go-demo/
 ├── go.mod                      # Go 模块定义
+├── Makefile                    # 构建脚本（自动处理 release/debug 切换）
+├── config.env.example          # 公开配置模板
+├── config.env                  # 本地配置（gitignored）
 ├── physx/                      # PhysX Go 绑定包
 │   ├── bridge.h                # C 头文件：C 兼容类型 + 100+ extern "C" 接口
-│   ├── bridge.cpp              # C++ 实现：所有 PhysX 桥接函数
+│   ├── bridge.cpp              # C++ 实现
 │   ├── physx.go                # cgo 指令，Foundation/Physics 生命周期
-│   ├── types.go                # Go 类型：Vec3, Quat, Transform, Bounds3
-│   ├── geometry.go             # 几何体：Box, Sphere, Capsule, Plane
-│   ├── material.go             # PxMaterial 材质
-│   ├── scene.go                # PxScene 场景管理/模拟
-│   ├── actor.go                # PxRigidDynamic/PxRigidStatic 刚体 (30+ 方法)
-│   ├── shape.go                # PxShape 形状 + 触发器
-│   ├── joint.go                # 6 种关节 + D6 自由度配置
-│   ├── scene_query.go          # Raycast/Sweep/Overlap 场景查询
+│   ├── types.go                # Vec3, Quat, Transform, Bounds3
+│   ├── geometry.go             # Box, Sphere, Capsule, Plane
+│   ├── material.go             # PxMaterial
+│   ├── scene.go                # PxScene + PVD 可视化参数
+│   ├── actor.go                # PxRigidDynamic/PxRigidStatic (30+ 方法)
+│   ├── shape.go                # PxShape + 触发器 + 过滤数据
+│   ├── joint.go                # 6 种关节 + D6
+│   ├── scene_query.go          # Raycast/Sweep/Overlap
 │   ├── character.go            # 角色控制器 (CCT)
 │   ├── cooking.go              # 网格烹饪 (ConvexMesh/TriangleMesh)
 │   └── callbacks.go            # 模拟事件回调 + Vehicle 桩
 ├── cmd/
-│   └── main.go                 # 5 个演示程序
+│   └── main.go                 # 10 个演示程序
 └── bin/
-    └── physx-demo              # 编译好的独立二进制 (~3.7 MB)
+    └── physx-demo              # 编译好的独立二进制
 ```
 
 ## 快速开始
 
 ### 1. 编译 PhysX SDK
 
-在 PhysX 源码目录执行：
-
 ```bash
 cd PhysX_3.4/Source/compiler/linux64
-sed -i 's/-Werror//g' Makefile.*.mk           # 修复 GCC 13 兼容性
-sed -i 's/PX_SUPPORT_PVD=0/PX_SUPPORT_PVD=1/g' Makefile.*.mk  # 启用 PVD
+sed -i 's/-Werror//g' Makefile.*.mk
+sed -i 's/PX_SUPPORT_PVD=0/PX_SUPPORT_PVD=1/g' Makefile.*.mk
+
+# release（生产）:
 make release -j$(nproc)
+
+# debug（调试可视化）:
+make debug -j$(nproc)
 ```
 
 ### 2. 配置本地路径
 
 ```bash
 cp config.env.example config.env
-# 编辑 config.env，将 PHYSX_ROOT 改为你的 PhysX 源码实际路径
 ```
 
-`config.env` 已被 `.gitignore` 忽略，不会提交到仓库。
+编辑 `config.env`，设置 PhysX 源码路径和构建类型：
 
-### 3. 构建 Go 项目
+```ini
+PHYSX_ROOT=/path/to/your/PhysX-3.4-master
+BUILD_TYPE=release    # 或 debug（启用调试可视化）
+```
+
+> `config.env` 已被 `.gitignore` 忽略，不会提交到仓库。
+
+### 3. 构建
 
 ```bash
 make build
-# 或者直接运行演示：
-make test
+# 输出: === Building with BUILD_TYPE=debug (DEBUG) ===
 ```
 
-### 4. 运行演示
+Makefile 根据 `BUILD_TYPE` 自动选择正确的库名和编译宏：
+
+| BUILD_TYPE | 动态库后缀 | 编译宏 | 用途 |
+|------------|-----------|--------|------|
+| `release` | `libPhysX3_x64.so` | `-DNDEBUG` | 生产优化 |
+| `debug` | `libPhysX3DEBUG_x64.so` | `-D_DEBUG -DPX_DEBUG=1` | PVD 关节可视化 |
+
+## 运行演示
 
 ```bash
-# 下落球体 + PVD 可视化
-make run ARGS=sphere
+make run ARGS=<demo-name>
+make test          # 快速测试（raycast）
+```
 
-# 射线检测（无需 PVD）
-make run ARGS=raycast
+### 物理模拟
 
-# 或直接调用二进制：
-./bin/physx-demo boxes
-./bin/physx-demo joints
-./bin/physx-demo trigger
+| 命令 | Demo | 说明 | PVD |
+|------|------|------|-----|
+| `sphere` | 下落球体 | 球从 20m 落下，触地反弹 | ✅ |
+| `boxes` | 盒子堆叠 | 15 个盒子金字塔倒塌 | ✅ |
+| `joints` | 钟摆链 | 4 节铰链，底部受冲量摆动 | ✅ |
+| `d6joint` | D6 关节 | Y-平移+Y-扭转的 6-DOF 约束 | ✅ |
+| `kinematic` | 运动平台 | 平台上下移动，球体随动 | ✅ |
+
+### 场景查询
+
+| 命令 | Demo | 说明 | PVD |
+|------|------|------|-----|
+| `raycast` | 射线检测 | 从上方射击，命中地面和障碍物 | ✗ |
+| `sweep` | 扫描检测 | 球体横扫场景，返回命中列表 | ✗ |
+
+### 其他
+
+| 命令 | Demo | 说明 | PVD |
+|------|------|------|-----|
+| `character` | 角色控制器 | 胶囊体向前行走，越过障碍和斜坡 | ✅ |
+| `trigger` | 触发器 | 球体穿过 trigger zone | ✗ |
+| `cooking` | 网格烘焙 | 四面体+金字塔网格，放入场景 | ✗ |
+
+## PVD 关节可视化
+
+PhysX 默认不发送关节数据到 PVD，需要两步主动开启：
+
+### 1. 启用数据传输
+
+```go
+scene.SetPVDFlags(true, true, true)
+// → setScenePvdFlag(eTRANSMIT_CONSTRAINTS, true)
+```
+
+### 2. 开启界面渲染
+
+```go
+scene.SetVisualizationParameter(physx.VisScale, 1.0)              // 总开关
+scene.SetVisualizationParameter(physx.VisJointLocalFrames, 2.0)   // 关节坐标系
+scene.SetVisualizationParameter(physx.VisJointLimits, 2.0)        // 关节限位弧
+```
+
+> **注意**：`VisJointLocalFrames=21`、`VisJointLimits=22`（不是 6 和 7！PhysX 枚举中间有废弃项把值推后了）。
+
+### 3. 使用 Debug 构建
+
+Release 构建不含调试可视化代码，必须在 `config.env` 中设置：
+```ini
+BUILD_TYPE=debug
 ```
 
 ## API 概览
@@ -81,7 +144,7 @@ make run ARGS=raycast
 foundation := physx.CreateFoundation()
 defer foundation.Release()
 
-hostIP := getWindowsHostIP()   // WSL2 gateway IP, or "" to disable PVD
+hostIP := getWindowsHostIP()   // WSL2 网关 IP，或 "" 禁用 PVD
 physics := physx.CreatePhysics(foundation, hostIP)
 defer physics.Release()
 ```
@@ -93,122 +156,81 @@ scene := physx.CreateScene(physics, 4, 0, -9.81, 0)
 defer scene.Release()
 
 mat := physx.CreateMaterial(physics, 0.5, 0.5, 0.6)
-defer mat.Release()
 
-// 快捷创建：动态球体
+// 快捷创建
 sphere := physx.CreateDynamicSphere(physics, 0, 10, 0, 1.0, mat, 10.0)
-scene.AddActor(sphere)
-
-// 地面
 ground := physx.CreateStaticPlane(physics, 0, 1, 0, 0, mat)
+scene.AddActor(sphere)
 scene.AddActor(ground)
-```
-
-### 模拟循环
-
-```go
-dt := float32(1.0 / 60.0)
-for i := 0; i < 600; i++ {
-    scene.Simulate(dt)
-    px, py, pz, _, _, _, _ := sphere.GetGlobalPose()
-    fmt.Printf("pos=(%.3f, %.3f, %.3f)\n", px, py, pz)
-}
 ```
 
 ### 关节
 
 ```go
-// 钟摆：固定关节 + 旋转关节链
-anchor := physx.CreateRigidStatic(physics, 0, 5, 0, 0, 0, 0, 1)
-box := physx.CreateDynamicBox(physics, 0, 4, 0, 0.5, 0.5, 0.5, mat, 1.0)
-
-joint := physx.CreateRevoluteJoint(physics, anchor,
-    physx.NewTransform(0, -0.5, 0, 0, 0, 0, 1),
-    box,
-    physx.NewTransform(0, 0.5, 0, 0, 0, 0, 1))
+joint := physx.CreateRevoluteJoint(physics, anchor, anchorFrame, body, bodyFrame)
 joint.SetRevoluteLimit(-1.5, 1.5, 100, 10)
+joint.SetConstraintFlag(physx.JointFlagVisualization, true)
 ```
 
-### 射线检测
+### D6 关节
 
 ```go
-origin := physx.NewVec3(0, 10, 0)
-direction := physx.NewVec3(0, -1, 0)
-hits := scene.Raycast(origin, direction, 100,
-    physx.HitFlagPosition|physx.HitFlagDistance,
-    physx.QueryFlagStatic|physx.QueryFlagDynamic, nil, 16)
-
-for _, hit := range hits {
-    fmt.Printf("pos=%v dist=%.2f\n", hit.Position, hit.Distance)
-}
+d6 := physx.CreateD6Joint(physics, a0, f0, a1, f1)
+d6.SetD6Motion(physx.D6AxisX, physx.D6MotionLocked)
+d6.SetD6Motion(physx.D6AxisY, physx.D6MotionFree)
+d6.SetD6Drive(physx.D6DriveTwist, physx.D6JointDrive{Stiffness: 100, Damping: 10})
 ```
 
 ### 角色控制器
 
 ```go
 mgr := physx.CreateControllerManager(scene)
-defer mgr.Release()
-
-ctrl := mgr.CreateCapsuleController(physics, 0.5, 1.8, 0, 2, 0, mat)
+ctrl := mgr.CreateCapsuleController(physics, 0.4, 1.6, 0, 2, 0, mat)
 ctrl.SetStepOffset(0.5)
-ctrl.SetSlopeLimit(0.7)
-
-// 移动
-flags := ctrl.Move(0, -9.81*dt, 0, 0.001, dt)
-x, y, z := ctrl.GetPosition()
+ctrl.Move(dx, dy, dz, 0.001, dt)
 ```
 
-## 已包装的 PhysX 子系统和接口
+### 网格烹饪
+
+```go
+cooking := physx.CreateCooking()
+convex, _ := cooking.CookConvexMesh(vertices)
+shape := physx.CreateConvexMeshShape(physics, convex, mat, true)
+```
+
+### 场景查询
+
+```go
+hits := scene.Raycast(origin, dir, 100, hitFlags, queryFlags, nil, 16)
+hits := scene.Sweep(geom, geomType, pose, dir, 20, hitFlags, queryFlags, nil, 16)
+```
+
+## PVD 可视化参数参考
+
+| 常量 | 值 | 说明 |
+|------|---|------|
+| `VisScale` | 0 | 总开关，0=关闭所有可视化 |
+| `VisBodyAxes` | 2 | 刚体坐标系 |
+| `VisJointLocalFrames` | **21** | 关节局部坐标系 |
+| `VisJointLimits` | **22** | 关节限位弧 |
+| `VisCollisionShapes` | 13 | 碰撞形状 |
+
+> 枚举值来自 `PxVisualizationParameter.h`。注意 6-20 被 `eDEPRECATED_BODY_JOINT_GROUPS`、contact、collision 等项占用。
+
+## 已包装的 PhysX 子系统
 
 | 子系统 | 接口数量 | 说明 |
 |--------|---------|------|
-| **Foundation** | 4 | 创建/释放 Foundation 和 Physics，PVD 连接 |
-| **Scene** | 12 | 场景创建、模拟、重力、Actor 增删、PVD 标志 |
-| **Actor** | 35+ | 动态/静态创建、姿态、速度、力/扭矩、质量、休眠、运动学目标、阻尼、锁定标志、世界包围盒 |
-| **Material** | 10 | 动/静摩擦、弹性、组合模式 |
-| **Shape** | 15+ | Box/Sphere/Capsule/ConvexMesh/TriangleMesh 形状、触发器、过滤数据、接触偏移 |
-| **Joint** | 25+ | Fixed/Revolute/Spherical/Prismatic/Distance/D6 关节，限位、驱动、断裂力 |
-| **Scene Query** | 3 | Raycast/Sweep/Overlap，可配置命中标志和查询标志 |
-| **Character** | 12 | Box/Capsule 控制器管理器、移动、步高、坡度 |
-| **Cooking** | 6 | 凸包网格/三角形网格烘焙，形状创建 |
-| **Callbacks** | 4 | Contact/Trigger/Sleep/Advance 事件注册 |
-
-## 系统要求
-
-- **OS**: Ubuntu 24.04 WSL2（Windows 主机）
-- **Go**: 1.22+
-- **PhysX**: 3.4（从 NVIDIA GitHub 编译）
-- **编译器**: GCC 13+（需要移除 `-Werror` 和修复 `GuGJKType.h`）
-- **PVD**: PhysX Visual Debugger 3.4（在 Windows 上运行）
-
-## 关键设计决策
-
-### 不透明句柄 + 结构体包装
-
-由于 PhysX C++ 类不能跨 cgo 边界传递，每个对象用不透明句柄包装。在 Go 侧用 struct 包装 C 指针：
-
-```go
-type ActorHandle struct{ h C.PxActorHandle }
-func (a *ActorHandle) GetMass() float32 { ... }
-```
-
-### C 兼容数学类型
-
-定义与 PhysX POD 类型布局兼容的 C 结构体，在 bridge.cpp 中做值拷贝转换：
-
-```c
-typedef struct { float x, y, z; }    CPxVec3;
-typedef struct { float x, y, z, w; } CPxQuat;
-typedef struct { CPxQuat q; CPxVec3 p; } CPxTransform;
-```
-
-### 从不 memset C++ 结构体
-
-包含虚函数或非 POD 成员的 C++ 对象（如 `PxDefaultAllocator`）绝对不能 `memset`——这会破坏 vtable 指针导致段错误。始终逐个字段初始化。
-
-### rpath 嵌入库路径
-
-`-Wl,-rpath` 将 .so 搜索路径嵌入二进制文件，运行时无需 `LD_LIBRARY_PATH`。
+| Foundation | 4 | Foundation/Physics 生命周期，PVD 连接 |
+| Scene | 15 | 场景创建、模拟、重力、可视化参数 |
+| Actor | 35+ | 动态/静态创建、姿态、速度、力、质量、休眠、运动学 |
+| Material | 10 | 动/静摩擦、弹性、组合模式 |
+| Shape | 15+ | Box/Sphere/Capsule/ConvexMesh/TriangleMesh、触发器、过滤数据 |
+| Joint | 25+ | 6 种关节+D6，限位、驱动、断裂力、可视化标志 |
+| Scene Query | 3 | Raycast/Sweep/Overlap |
+| Character | 12 | Box/Capsule 控制器、移动、步高、坡度 |
+| Cooking | 6 | 凸包/三角网格烘焙 |
+| Callbacks | 4 | Contact/Trigger/Sleep/Advance 事件 |
 
 ## 库依赖
 
@@ -216,10 +238,10 @@ typedef struct { CPxQuat q; CPxVec3 p; } CPxTransform;
 libPhysX3_x64.so              ← 主物理引擎
 ├── libPhysX3Common_x64.so
 ├── libPxFoundation_x64.so
-├── libPxPvdSDK_x64.so        ← PVD 协议（可选）
+├── libPxPvdSDK_x64.so        ← PVD 协议
 ├── libPhysX3Cooking_x64.so   ← 网格生成
 ├── libPhysX3CharacterKinematic_x64.so ← 角色控制器
 └── libPhysX3Extensions.a     ← 静态库：工厂函数
 ```
 
-链接顺序很重要：`-lPhysX3Extensions -lPhysX3_x64 -lPhysX3Common_x64 -lPhysX3CharacterKinematic_x64 -lPhysX3Cooking_x64 -lPxFoundation_x64 -lPxPvdSDK_x64`
+Debug 版本库名加 `DEBUG` 后缀：`libPhysX3DEBUG_x64.so`、`libPhysX3ExtensionsDEBUG.a` 等。
